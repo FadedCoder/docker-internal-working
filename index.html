@@ -1,0 +1,445 @@
+<!doctype html>
+<html>
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+
+    <title>Docker Internals</title>
+
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+
+    <link rel="stylesheet" href="dist/reset.css">
+    <link rel="stylesheet" href="dist/reveal.css">
+    <link rel="stylesheet" href="dist/theme/blood.css">
+    <link rel="stylesheet" href="plugin/highlight/monokai.css">
+</head>
+
+<body>
+    <div class="reveal">
+        <div class="slides">
+            <section>
+                <!-- Slide 1 -->
+                <img src="img/docker_logo.png" alt="Docker logo" />
+                <h3>Docker and its Anatomy</h3>
+                <p>How containers actually function and how Docker works</p>
+                <p style="margin-top: 3rem;"><small>Made by: <a href="https://sohamsen.me" target="_blank">Soham Sen</a>.</small></p>
+            </section>
+
+            <section data-markdown style="text-align: left;">
+                <!-- Slide 2 -->
+                <textarea data-template>
+                    ## Um, what is Docker?
+
+                    At its core, Docker is a platform for building, running, and managing **containers**.
+                    <br><br>
+                    #### Q: But what is a container?
+
+                    A: You can think of a container as a **lightweight VM**.
+
+                    Like a VirtualBox or VMWare VM but one that starts very quickly and has **minimal resource overhead**
+                    (running an app inside Docker vs on host will barely have any difference in CPU or RAM utilization).
+                </textarea>
+            </section>
+
+            <section data-markdown style="text-align: left;">
+                <!-- Slide 3 -->
+                <textarea data-template>
+                    ## But why even use a container?
+
+                    Containers were primarily invented to address the issue:
+
+                    *“But it works on my machine!”*
+
+                    Using containers, you can package the dependencies along with the application (like statically linked libraries)
+                    which ensures that across all environments*, the program will run the same way.
+
+                    <small style="margin-top: 2rem;">*: Most environments, at least the ones running the same kernel</small>
+                </textarea>
+            </section>
+
+            <section data-markdown style="text-align: left;">
+                <!-- Slide 4 -->
+                <textarea data-template>
+                    ## So … a container is just a light-weight VM?
+
+                    Sorry, I lied. Internally, it is very different from a typical virtual machine.
+
+                    It’s all just a concoction made of **cgroups** and **namespace** (in Linux) (don’t be scared, we’ll get back to this, I promise)
+
+                    A container runs code on the host OS itself (in the case of Linux, it even uses the same kernel as the host!),
+                    therefore it’s limited by the OS it can run on.
+
+                    Whereas a Virtual Machine can run any kernel or OS, and *often* executes software instructions directly on the hardware.
+                </textarea>
+            </section>
+
+            <section data-markdown style="text-align: left;">
+                <!-- Slide 5 -->
+                <textarea data-template>
+                    ## What in the world is a *cgroup* !?
+
+                    In short, cgroups **control, restrict or account** resources used by processes.
+                    Essentially, they can restrict or monitor the memory, CPU, net or disk I/O that can be used by a process.
+
+                    <div style="text-align: center">
+                        <img src="img/cgroups.png" alt="Cgroups">
+                    </div>
+                </textarea>
+            </section>
+
+            <section>
+                <section data-markdown style="text-align: left;">
+                    <!-- Slide 6 -->
+                    <textarea data-template>
+                        ## Let’s play with cgroups!
+
+                        Let's try to create a cgroup and then using it, monitor and limit the memory used up by a process.
+
+                        Scroll down to see the console commands!
+                    </textarea>
+                </section>
+                <section>
+                    <pre style="width: 100%; height: 100%">
+                        <code data-trim data-noescape class="language-bash">
+                            # Install libcgroup and memtester
+                            # In Arch linux, to install, run: yay -S libcgroup-git memtester
+
+                            # Let's create a cgroup now
+                            $ sudo cgcreate -a username -g memory:iambadatnaminggroups
+                            # And then limit memory to 10 MB (10000000 bytes) and run memtester in it
+                            $ echo 10000000 > /sys/fs/cgroup/iambadatnaminggroups/memory.max
+                            $ sudo cgexec -g memory:iambadatnaminggroups memtester 8M
+                            
+                            # Run below command in another terminal tab:
+                            $ cat /sys/fs/cgroup/iambadatnaminggroups/memory.current
+                            8564736  # Approx. 8.5MB is being consumed by the process
+                            
+                            # Now let’s see what happens when we try to allocate 11MB!
+                            $ sudo cgexec -g memory:iambadatnaminggroups memtester 11M
+                            <... omitted output ...>
+                            got  11MB (11534336 bytes), trying mlock ...[1]    87486 killed
+                            # It goes OOM and gets killed!
+                        </code>
+                    </pre>
+                    <p style="margin-top: 2rem;"><small>Psst, these commands were written and tested in Bash and Arch
+                            Linux!</small></p>
+                </section>
+            </section>
+
+            <section data-markdown style="text-align: left;">
+                <!-- Slide 7 -->
+                <textarea data-template>
+                    ## Now, what is a *namespace* ?
+
+                    In layman terms, namespaces helps the OS to lie to processes about various things, such as hostname,
+                    mounted partitions, users, networks and even the other processes!
+
+                    Whereas `cgroups` limit **how much you can use**, `namespaces` limit **what you can see**.
+
+                    For example, using namespaces, a process might think it’s the initial process (PID 1) and is running as root
+                    when in reality it’s an arbitrary process being run by a non-privileged user in the host OS.
+                    
+                    We'll see how to implement this soon!
+                </textarea>
+            </section>
+
+            <section data-markdown style="text-align: left;">
+                <!-- Slide 8 -->
+                <textarea data-template>
+                    ## The UTS namespace, aka lying about hostname
+
+                    This namespace is pretty simple: it just changes the hostname that the process sees.
+
+                    For example, your `/etc/hostname` might read “coolsystem” but you can run, say,
+                    a database server inside a UTS namespace with the hostname “database”, and it will think its hostname is “database” only.
+
+                    <div style="text-align: center;">
+                        <img src="img/uts_namespace.png" alias="Example of UTS namespace" />
+                    </div>
+                </textarea>
+            </section>
+
+            <section>
+                <section data-markdown style="text-align: left;">
+                    <!-- Slide 9 -->
+                    <textarea data-template>
+                        ## The mount namespace, aka lying about filesystem
+
+                        This one is pretty old, and you might be familiar with `chroot` uses it to change the root directory (/).
+                        A process inside this namespace cannot see files or folders outside the root folder.
+
+                        Scroll down to see the console commands!
+                    </textarea>
+                </section>
+                <section>
+                    <pre style="width: 100%;">
+                        <code data-trim data-noescape class="language-bash">
+                            $ mkdir -p fakeroot/{bin,lib,lib64,usr/bin,usr/lib,usr/lib64} && cd fakeroot
+                            
+                            # Copy some tools and their library dependencies to this fakeroot
+                            $ cp /usr/bin/{bash,ls,cat,touch,rm} ./usr/bin/
+                            $ cp ./usr/bin/bash ./bin/
+                            $ libs=( $(ldd ./usr/bin/* | grep -P '=> (.*) \(' | cut -d ' ' -f3) )
+                            $ for i in $libs; do
+                                cp $i $(echo $i | sed 's/\/usr/./') && cp $i ".$i";
+                              done
+                            
+                            # Now, let's change root!
+                            $ sudo chroot . /usr/bin/bash
+                            
+                            # Have fun inside the chroot! Note that you can’t access
+                            # anything outside the fakeroot folder from inside the chroot.
+                            
+                            # PS: You can safely execute rm -rf / here without destroying your PC!
+                            # It will just destroy the fakeroot environment.
+                        </code>
+                    </pre>
+                    <p style="margin-top: 2rem;"><small>Psst, these commands were written and tested in Bash and Arch
+                            Linux!</small></p>
+                </section>
+            </section>
+
+            <section>
+                <section data-markdown style="text-align: left;">
+                    <!-- Slide 10 -->
+                    <textarea data-template>
+                        ## The user namespace, aka lying about user
+
+                        Using this namespace, you can make a process believe that it’s running as root or any other user,
+                        when in the host system, the process is being run by a different user.
+
+                        Scroll down to see the console commands!
+                    </textarea>
+                </section>
+                <section>
+                    <pre style="width: 100%; height: 100%">
+                        <code data-trim data-noescape class="language-bash">
+                            $ unshare -r bash
+                            $ id
+                            uid=0(root) gid=0(root) groups=0(root),65534(nobody)
+                        </code>
+                    </pre>
+                    <p style="margin-top: 2rem;"><small>Psst, these commands were written and tested in Bash and Arch
+                            Linux!</small></p>
+                </section>
+            </section>
+
+            <section data-markdown style="text-align: left;">
+                <!-- Slide 11 -->
+                <textarea data-template>
+                    ## The net namespace, aka lying about networks
+
+                    This namespace will isolate the network interfaces that are available to a process.
+
+                    Typically, this is used with a pair of virtual interfaces (with the kernel doing some peering magic and acting as a crossover cable).
+
+                    This allows each process to have it’s own IP that is under a NAT and can be port-forwarded to the physical network interface.
+
+                    <div style="text-align: center;">
+                        <img src="img/net_namespace.png" style="height: 400px;" alias="Example of net namespace" />
+                    </div>
+                </textarea>
+            </section>
+
+            <section>
+                <section data-markdown style="text-align: left;">
+                    <!-- Slide 12 -->
+                    <textarea data-template>
+                        ## The pid namespace, aka lying about process trees
+
+                        In a typical Linux system, the initial process (with PID 1) is known as the init process and from it,
+                        all other processes spawn as child processes.
+                        
+                        Using this namespace, you can make a process believe that it is running with PID 1 and is the parent process.
+
+                        Scroll down to see the console commands!
+                    </textarea>
+                </section>
+                <section>
+                    <pre style="width: 100%; height: 100%">
+                        <code data-trim data-noescape class="language-bash">
+                            # First check the process tree on the host
+                            $ pstree
+                            systemd─┬─agetty
+                                    ├─crond
+                                    ├─dbus-daemon
+                                    ├─dockerd─┬─containerd───23*[{containerd}]
+                                    │         └─30*[{dockerd}]
+                                    ├─nginx───nginx
+                                    └─<... rest snipped ...>
+
+                            # Next, create the pid namespace
+                            $ sudo unshare -fp --mount-proc /bin/bash
+                            
+                            # Create an example child process inside the namespace
+                            $ sleep 999 &
+                            
+                            # ... and another one to run bash
+                            $ bash
+
+                            # Now run pstree and see that bash is the parent process
+                            $ pstree
+                            bash─┬─bash───pstree
+                                 └─sleep
+                            
+                            # Check all running processes and their PIDs
+                            $ ps aux
+                            USER         PID %CPU %MEM    VSZ   RSS TTY      STAT START   TIME COMMAND
+                            root           1  0.1  0.0   7732  4440 pts/1    S    02:48   0:00 /bin/bash
+                            root           3  0.0  0.0   5356   692 pts/1    S    02:48   0:00 sleep 999
+                            root           4  0.2  0.0   7732  4352 pts/1    S    02:48   0:00 bash
+                            root           7  0.0  0.0  10240  3380 pts/1    R+   02:48   0:00 ps aux
+                        </code>
+                    </pre>
+                    <p style="margin-top: 2rem;"><small>Psst, these commands were written and tested in Bash and Arch
+                            Linux!</small></p>
+                </section>
+            </section>
+
+            <section data-markdown style="text-align: left;">
+                <!-- Slide 13 -->
+                <textarea data-template>
+                    ## The IPC namespace, aka lying about … IPC channels
+
+                    Processes can talk to each other in various ways and those ways collectively fall under the Inter Process Communication (IPC).
+                    
+                    This namespace can restrict the IPC channels that are available to certain processes.
+                    
+                    Yes, it’s a really obscure thing, let’s not worry about this too much and move on.
+
+                    <small>(PS: When was the last time you saw an app communicating with another via IPC?)</small>
+                </textarea>
+            </section>
+
+            <section data-markdown style="text-align: left;">
+                <!-- Slide 14 -->
+                <textarea data-template>
+                    ## So, how does it all fit together?
+
+                    Containers essentially are just processes with particular namespaces and cgroups attached to them.
+
+                    While containers can be created manually directly from the kernel, this is very tedious
+                    and here’s where Docker (and similar tools like LXC come in):
+                    1. They create a process
+                    2. Then they attach cgroups and a bunch of namespaces onto the process
+                    3. And finally they mount filesystems (if any) so that these processes can access files on the host system.
+                </textarea>
+            </section>
+
+            <section data-markdown style="text-align: left;">
+                <!-- Slide 15 -->
+                <textarea data-template>
+                    ## Now, how exactly does Docker work?
+
+                    Docker is an entire platform for managing, creating, building and deploying containers. It has multiple components, such as:
+
+                    * Client side tools (docker-cli or docker-compose)
+                    * Docker daemon
+                    * Containerd daemon
+                    * Runc
+                    * Registry
+
+                    <div style="text-align: center;">
+                        <img src="img/docker_architecture.svg" style="height:450px;" alias="Example of net namespace" />
+                    </div>
+                </textarea>
+            </section>
+
+            <section data-markdown style="text-align: left;">
+                <!-- Slide 16 -->
+                <textarea data-template>
+                    ## Client-Side Tools
+
+                    There are several client side tools that can be used to manage Docker containers,
+                    the most famous ones being the Docker CLI and Docker Compose.
+                    
+                    1. The **Docker CLI** is the builtin “default” tool that’s used for running, creating, building or managing single containers.
+                    2. Whereas **Docker-Compose** is used to run, build or manage multiple containers together
+                    (for example, a web server container and a database container together).
+
+                </textarea>
+            </section>
+
+            <section data-markdown style="text-align: left;">
+                <!-- Slide 17 -->
+                <textarea data-template>
+                    ## Docker Daemon
+
+                    The Docker daemon does all the heavy lifting of building, running or distributing containers.
+                    It communicates with the client either with a REST API, over UNIX sockets or on a network interface.
+
+                    A good analogy would be to think of the **Docker daemon** as the **backend of a website** which handles
+                    all the logic whereas the **client tools** to be the **frontend** with which the user interfaces.
+
+                    The Docker daemon can either be run on the local machine (on which the client exists) or on a remote server.
+                </textarea>
+            </section>
+
+            <section data-markdown style="text-align: left;">
+                <!-- Slide 18 -->
+                <textarea data-template>
+                    ## Containerd
+
+                    It is a high-level container runtime, that is, it actually pulls the images from the registries, manages them,
+                    and then passes it to a lower-level runtime (such as runC) for creation.
+
+                    The Docker daemon internally uses containerd to manage the containers.
+
+                    It manages (monitors) the lifecycle of containers. It is a long running daemon that continually monitors the status of the containers.
+                </textarea>
+            </section>
+
+            <section data-markdown style="text-align: left;">
+                <!-- Slide 19 -->
+                <textarea data-template>
+                    ## RunC
+
+                    This is the low-level container runtime that *actually* runs and creates containers.
+                    It is responsible for creating the actual namespaces and cgroups needed to run a container.
+
+                    It is based on `libcontainer` which is a Go-based implementation for creating containers.
+
+                    It is a short lived process that dies after creating a container leaving a long-running process
+                    called a shim in place that connects the container with containerd.
+                </textarea>
+            </section>
+
+            <section data-markdown>
+                <!-- Slide 20 -->
+                <textarea data-template>
+                    ## Flow of Control for Docker
+
+                    <img src="img/docker_flow.png" style="height: 800px;" alt="Flow of control for Docker" />
+                </textarea>
+            </section>
+
+            <section data-markdown>
+                <!-- Slide 21 -->
+                <textarea data-template>
+                    # Thank you!
+                </textarea>
+            </section>
+        </div>
+    </div>
+
+    <script src="dist/reveal.js"></script>
+    <script src="plugin/search/search.js"></script>
+    <script src="plugin/markdown/markdown.js"></script>
+    <script src="plugin/highlight/highlight.js"></script>
+    <script>
+        Reveal.initialize({
+            width: 1800,
+            height: 1000,
+            margin: 0.04,
+            minScale: 0.2,
+            maxScale: 2.0,
+            mouseWheel: true,
+            hash: true,
+            plugins: [RevealMarkdown, RevealHighlight, RevealSearch]
+        });
+    </script>
+</body>
+
+</html>
