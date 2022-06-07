@@ -2,4 +2,4 @@
 
 This slideshow explains how Docker containers work internally.
 
-Hosted on [GitHub Pages](https://fadedcoder.github.io/docker-internals)
+Hosted on [GitHub Pages](https://yureien.github.io/docker-internals)
